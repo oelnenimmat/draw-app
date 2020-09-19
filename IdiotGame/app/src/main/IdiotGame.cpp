@@ -268,9 +268,9 @@ struct Game
 	// ----------------------------------------------
 	GLuint brushShaderId;
 	GLuint brushMaskTextureId;
-	GLuint brushGradientTexture0;
-	GLuint brushGradientTexture1;
-	GLuint brushGradientTexture;
+
+	static constexpr int brushGradientCount = 3;
+	GLuint brushGradientTextures[brushGradientCount];
 	int brushGradientTextureIndex;
 
 	GLuint canvasShaderId;
@@ -278,9 +278,14 @@ struct Game
 	GLuint canvasFramebuffer;
 
 	GLuint quadShader;
-	GLuint buttonTextTexture;
 
 	GLuint creditsTexture;
+
+	// Todo(Leo): really actually maybe just define these in shader with layout like with vulkan
+	GLint brushTextureLocation;
+	GLint gradientTextureLocation;
+	GLint gradientPositionLocation;
+	GLint brushModeLocation;
 
 	// Note(Leo): From top left
 	// Todo(Leo): Compute according to actual screen
@@ -344,14 +349,13 @@ struct Game
 	ALooper* 			looper;
 
 	ANativeWindow* 		window;
+	ANativeWindow* 		pendingWindow;
+
 	AInputQueue* 		inputQueue;
+	AInputQueue* 		pendingInputQueue;
 
 	// Todo(Leo): we probably want to take this into account too
 	// ARect 				contentRect;
-
-	// Todo(Leo): Check if we really need pending stuffs
-	ANativeWindow* 		pendingWindow;
-	AInputQueue* 		pendingInputQueue;
 	// ARect 				pendingContentRect;
 };
 
@@ -496,16 +500,11 @@ internal void initialize_shaders(Game * game)
 		const char constexpr * brushVertexShaderSource =
 		R"(	#version 300 es
 			in vec4 vertex;
-
-			uniform mat4 projection;
-			uniform mat4 view;
-			uniform mat4 model;
-
 			out vec2 uv;
 
 			void main()
 			{
-				gl_Position = projection * view * model * vec4(vertex.xy, 0.0, 1.0);
+				gl_Position = vec4(vertex.xy, 0.0, 1.0);
 				uv = vertex.zw;
 			}
 		)";
@@ -599,24 +598,6 @@ internal void initialize_shaders(Game * game)
 			0, 230.0f /255, 1, 					0.6f,
 		};
 
-		generate_gradient_texture_strip(3, gradientValues_0, gradientPixelCount, gradientTextureMemory);
-
-		GLuint brushGradientTexture0;
-		glGenTextures(1, &brushGradientTexture0);
-		glBindTexture(GL_TEXTURE_2D, brushGradientTexture0);
-
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-
-		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, gradientPixelCount, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, gradientTextureMemory);
-
-		game->brushGradientTexture0 	= brushGradientTexture0;
-		game->brushGradientTexture 		= game->brushGradientTexture0;
-		game->brushGradientTextureIndex = 0;
-
-
 		v4 gradientValues_1 [] = 
 		{
 			0.352, 0.858, 0.556, 	0.15,
@@ -624,23 +605,44 @@ internal void initialize_shaders(Game * game)
 			1, 0.956, 0.301, 		0.59,
 		};
 
-		generate_gradient_texture_strip(3, gradientValues_1, gradientPixelCount, gradientTextureMemory);
+		v4 gradientValues_2 [] =
+		{
+			0.06, 0.03, 0.05, 0.0f,
+			0.06, 0.03, 0.05, 1.0f,
+		};
 
+		ArrayView<v4> gradients[] = 
+		{
+			array_view(gradientValues_0),
+			array_view(gradientValues_1),
+			array_view(gradientValues_2),
+		};
 
-		GLuint brushGradientTexture1;
-		glGenTextures(1, &brushGradientTexture1);
-		glBindTexture(GL_TEXTURE_2D, brushGradientTexture1);
+		glGenTextures(game->brushGradientCount, game->brushGradientTextures);
 
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+		for(int i = 0; i < game->brushGradientCount; ++i)
+		{
+			generate_gradient_texture_strip(gradients[i].count, gradients[i].memory, gradientPixelCount, gradientTextureMemory);
 
-		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, gradientPixelCount, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, gradientTextureMemory);
+			glBindTexture(GL_TEXTURE_2D, game->brushGradientTextures[i]);
 
-		game->brushGradientTexture1 = brushGradientTexture1;
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, gradientPixelCount, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, gradientTextureMemory);
+		}
 
 		delete [] gradientTextureMemory;
+
+		game->brushGradientTextureIndex = 0;
+
+		// Get uniform locations
+		game->brushTextureLocation 		= glGetUniformLocation(game->brushShaderId, "brushTexture");
+		game->gradientTextureLocation 	= glGetUniformLocation(game->brushShaderId, "gradientColor");
+		game->gradientPositionLocation 	= glGetUniformLocation(game->brushShaderId, "gradientPosition");
+		game->brushModeLocation 		= glGetUniformLocation(game->brushShaderId, "brushMode");
 	}
 
 	/// CANVAS
@@ -761,11 +763,7 @@ internal void initialize_shaders(Game * game)
 				else
 				{
 					outColor = vec4(1,0,1,1);
-				}
-
-				// float a = texture(_texture, texcoord).g;
-				// outColor = vec4(a,a,a,1); 
-				// outColor = vec4(0.8,0.2, 0.2,1); 
+				} 
 			}
 		)";
 
@@ -776,31 +774,6 @@ internal void initialize_shaders(Game * game)
 		glAttachShader(game->quadShader, quadVertexShader);
 		glAttachShader(game->quadShader, quadFragmentShader);
 		glLinkProgram(game->quadShader);
-
-
-		{
-			glGenTextures(1, &game->buttonTextTexture);
-
-			AAssetManager * assetManager 	= game->activity->assetManager;
-			AAsset * textureAsset 			= AAssetManager_open(assetManager, "clear_link.png", AASSET_MODE_BUFFER);
-			int length 						= AAsset_getLength(textureAsset);
-			uint8 * buffer 					= (uint8*)AAsset_getBuffer(textureAsset);
-
-			// Note(Leo): assume 4 channel textures
-			int width, height, channels;
-			uint8 * textureMemory 			= stbi_load_from_memory(buffer, length, &width, &height, &channels, 4);
-
-			glBindTexture(GL_TEXTURE_2D, game->buttonTextTexture);
-
-			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-
-			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, textureMemory);
-
-			stbi_image_free(textureMemory);
-		}
 
 		/// CREDITS TEXTURE
 		{
@@ -829,9 +802,15 @@ internal void initialize_shaders(Game * game)
 	}
 }
 
-internal void draw_brush(Game * game, v2 screenPosition, float size, float gradientPosition)
+internal void draw_brush(Game * game, v2 position, float size, float gradientPosition, float noisePosition)
 {
-	GLfloat vertices [] =
+	struct Vertex 
+	{
+		v2 position;
+		v2 texcoord;
+	};
+
+	Vertex vertices [] =
 	{
 		-0.5, -0.5, 0, 0,
 		 0.5, -0.5, 1, 0,
@@ -839,45 +818,32 @@ internal void draw_brush(Game * game, v2 screenPosition, float size, float gradi
 		 0.5,  0.5, 1, 1,
 	};
 
-	GLfloat projection [] =
-	{
-		2 / (float)game->context.width, 0, 0, 0,
-		0, 2 / (float)game->context.height, 0, 0,
-		0, 0, 1, 0,
-		0, 0, 0, 1
-	};
+	float x = position.x - (game->context.width / 2);
+	float y = (game->context.height / 2) - position.y;
 
-	GLfloat view [] =
-	{
-		1, 0, 0, 0,
-		0, 1, 0, 0,
-		0, 0, 1, 0,
-		0, 0, 0, 1
-	};
+	v2 projection = {2.0f / game->context.width, 2.0f / game->context.height};
 
-	float x = screenPosition.x - (game->context.width / 2);
-	float y = (game->context.height / 2) - screenPosition.y;
-
-	GLfloat model [] =
+	if(game->brushMode != BRUSH_ERASE && game->brushGradientTextureIndex == 2)
 	{
-		size, 0, 0, 0,
-		0, size, 0, 0,
-		0, 0, 1, 0,
-		x, y, 0, 1,
-	};
+		noisePosition 	/= 100;
+		float noise 	= noise_1D(noisePosition);
+		noise 			+= 0.2;
+		noise 			/= 1.2;
+
+		size *= noise;
+	}
+
+
+	for (auto & vertex : vertices)
+	{
+		vertex.position = vertex.position * size;
+		vertex.position = vertex.position + v2 {x,y};
+
+		vertex.position.x *= projection.x;
+		vertex.position.y *= projection.y;
+	}
 
 	glUseProgram(game->brushShaderId);
-
-	// Todo(Leo): get these only when init opengl
-	// Todo(Leo): really actually maybe just define these in shader with layout like with vulkan
-	GLint projectionLocation 		= glGetUniformLocation(game->brushShaderId, "projection");
-	GLint viewLocation				= glGetUniformLocation(game->brushShaderId, "view");
-	GLint modelMatrixLocation 		= glGetUniformLocation(game->brushShaderId, "model");
-	GLint brushTextureLocation 		= glGetUniformLocation(game->brushShaderId, "brushTexture");
-	GLint colorLocation				= glGetUniformLocation(game->brushShaderId, "color");
-	GLint gradientTextureLocation 	= glGetUniformLocation(game->brushShaderId, "gradientColor");
-	GLint gradientPositionLocation 	= glGetUniformLocation(game->brushShaderId, "gradientPosition");
-	GLint brushModeLocation 		= glGetUniformLocation(game->brushShaderId, "brushMode");
 
 	// Bind canvas framebuffer
 	glBindFramebuffer(GL_FRAMEBUFFER, game->canvasFramebuffer);
@@ -886,20 +852,16 @@ internal void draw_brush(Game * game, v2 screenPosition, float size, float gradi
 	glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, 0, vertices);
 	glEnableVertexAttribArray(0);
 
-	glUniformMatrix4fv(projectionLocation, 1, false, projection);
-	glUniformMatrix4fv(viewLocation, 1, false, view);
-	glUniformMatrix4fv(modelMatrixLocation, 1, false, model);
-
-	glUniform1i(brushTextureLocation, 0);
+	glUniform1i(game->brushTextureLocation, 0);
 	glActiveTexture(GL_TEXTURE0);
 	glBindTexture(GL_TEXTURE_2D, game->brushMaskTextureId);
 
-	glUniform1i(gradientTextureLocation, 1);
+	glUniform1i(game->gradientTextureLocation, 1);
 	glActiveTexture(GL_TEXTURE1);
-	glBindTexture(GL_TEXTURE_2D, game->brushGradientTexture);
+	glBindTexture(GL_TEXTURE_2D, game->brushGradientTextures[game->brushGradientTextureIndex]);
 
-	glUniform1f(gradientPositionLocation, gradientPosition);
-	glUniform1i(brushModeLocation, game->brushMode);
+	glUniform1f(game->gradientPositionLocation, gradientPosition);
+	glUniform1i(game->brushModeLocation, game->brushMode);
 
 	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 	glEnable( GL_BLEND );
@@ -1025,7 +987,7 @@ internal void draw_canvas(Game * game)
 
 internal void update_stroke(Game * game, v2 oneBeforeStrokeStart, v2 strokeStart, v2 strokeEnd, v2 oneAfterStrokeEnd)
 {
-		// Todo(Leo): Thoroughly evaluate these two
+	// Todo(Leo): Thoroughly evaluate these two
 	constexpr float maxStrokeLength 			= 50;
 	constexpr float strokeStartMoveThreshold 	= 10;
 
@@ -1114,7 +1076,7 @@ internal void update_stroke(Game * game, v2 oneBeforeStrokeStart, v2 strokeStart
 		v2 dotPosition = v2_cubic_bezier_lerp(a,b,c,d, t);
 
 		float colorInterpolationTime = float_lerp(game->currentStrokeColourSelection, colourSelection, t);
-		draw_brush(game, dotPosition, game->strokeWidth, colorInterpolationTime);
+		draw_brush(game, dotPosition, game->strokeWidth, colorInterpolationTime, game->currentStrokeLength);
 	}
 
 	game->lastStrokeSectionLength 		= totalArcLength;
@@ -1253,6 +1215,7 @@ internal void process_input(Game * game)
 
 							game->strokeMoved 				= false;
 							game->lastStrokeSectionLength 	= 0;
+							game->currentStrokeLength 		= 0;
 						}
 
 						game->touchDownTime 	= time_now();
@@ -1285,17 +1248,8 @@ internal void process_input(Game * game)
 								log_info("Clear canvas");	
 
 								game->brushGradientTextureIndex += 1;
-								game->brushGradientTextureIndex %= 2;
+								game->brushGradientTextureIndex %= game->brushGradientCount;
 
-								if (game->brushGradientTextureIndex == 0)
-								{
-									game->brushGradientTexture = game->brushGradientTexture0;
-								}
-								else if (game->brushGradientTextureIndex == 1)
-								{
-									game->brushGradientTexture = game->brushGradientTexture1;
-								}
-								
 								clear_canvas(game);
 							}
 						}
@@ -1307,7 +1261,7 @@ internal void process_input(Game * game)
 								float interpolatonTime 		= float_clamp(timeSinceTouchDownMS / game->maxBrushSizeTimeMS, 0, 1);
 								float strokeWidth 			= float_lerp(game->minBrushSize, game->maxBrushSize, interpolatonTime);
 
-								draw_brush(game, game->drawPositionQueue[0], strokeWidth, 0);
+								draw_brush(game, game->drawPositionQueue[0], strokeWidth, 0, 0);
 								game->drawPositionQueueCount = 0;
 							}
 						}
@@ -1562,6 +1516,8 @@ internal void* game_thread_entry(void* param)
 		timespec 	frameFlipTime = time_now();
 		float 		elapsedTime = 0;
 
+		bool drawScreen = true;
+
 		while(game->running)
 		{
 
@@ -1598,10 +1554,12 @@ internal void* game_thread_entry(void* param)
 				{
 					game->drawPositionQueue[i] = game->drawPositionQueue[i + 1];
 				}
+
+				drawScreen = true;
 			};
 
 			int drawPositionQueueDequeuCount = 3;
-			while(game->drawPositionQueueCount > drawPositionQueueDequeuCount)
+			while(game->drawPositionQueueCount >= drawPositionQueueDequeuCount)
 			{
 				process_draw_queue();
 			}
@@ -1626,6 +1584,8 @@ internal void* game_thread_entry(void* param)
 						game->viewPosition = game->menuViewPosition;
 						game->state = VIEW_MENU;
 					}
+
+					drawScreen = true;
 				}
 				else if (game->state == VIEW_TRANSITION_TO_DRAW)
 				{
@@ -1635,11 +1595,15 @@ internal void* game_thread_entry(void* param)
 						game->viewPosition = game->drawViewPosition;
 						game->state = VIEW_DRAW;
 					}
+
+					drawScreen = true;
 				}
 			}
 
 			draw_canvas(game);
 			eglSwapBuffers(game->context.display, game->context.surface);
+
+			drawScreen = false;
 
 			// Todo(Leo): there is small distortion here, since time_elapsed_seconds gets its
 			// own 'time_now()' slighlty before new frameFlipTime's 'time_now()'
@@ -1799,6 +1763,8 @@ internal void android_callback_onInputQueueCreated(ANativeActivity* activity, AI
 
 	// Study
 	// Note(Leo): This seems that we block here until we have processed message elsewhere
+	// It has to do with pending queues. We create them here, and then wait that main thread
+	// will see them and process message and actually set those to use.
 	// Same on below
 
 	pthread_mutex_lock(&game->mutex);
